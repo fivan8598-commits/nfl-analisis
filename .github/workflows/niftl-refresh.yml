@@ -3,8 +3,8 @@ name: Actualizar Niftl
 on:
   workflow_dispatch:
   schedule:
-    # Revisión horaria de 06:13 a 23:13 de Cancún, de agosto a febrero.
-    - cron: '13 0-4,11-23 * 1,2,8-12 *'
+    # Revisión general cada media hora, todo el año.
+    - cron: '7,37 * * * *'
     # Domingos y sus noches en temporada regular y playoffs.
     - cron: '3-59/5 17-23 * 1,2,9-12 0'
     - cron: '3-59/5 0-4 * 1,2,9-12 1'
@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     env:
-      NIFTL_MODE: ${{ github.event_name == 'schedule' && github.event.schedule != '13 0-4,11-23 * 1,2,8-12 *' && 'game-window' || 'all' }}
+      NIFTL_MODE: ${{ github.event_name == 'schedule' && github.event.schedule != '7,37 * * * *' && 'game-window' || 'all' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
