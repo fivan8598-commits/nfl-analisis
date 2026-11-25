@@ -29,6 +29,25 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Comprobar identidad del repositorio
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import base64, json, sys
+          sys.path.insert(0, 'scripts')
+          from redactar_noticias import JsonHTTP, SiteAPI
+          site=SiteAPI(JsonHTTP(25))
+          token=site.bearer()
+          def claims(part):
+              return json.loads(base64.urlsafe_b64decode(part + '='*(-len(part)%4)))
+          header, payload, _=token.split('.')
+          data=claims(payload)
+          for key in ('iss','aud','sub','ref','repository','repository_id','repository_owner_id','event_name','workflow_ref','nbf','exp'):
+              print(key, data.get(key))
+          print('alg', claims(header).get('alg'), 'kid', claims(header).get('kid'))
+          PYTHON
+
       - name: Consultar cola de resúmenes
         id: cola
         timeout-minutes: 1
