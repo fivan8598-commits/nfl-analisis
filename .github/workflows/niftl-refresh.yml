@@ -1,0 +1,39 @@
+name: Actualizar Niftl
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Revisión horaria de 06:13 a 23:13 de Cancún, de agosto a febrero.
+    - cron: '13 0-4,11-23 * 1,2,8-12 *'
+    # Domingos y sus noches en temporada regular y playoffs.
+    - cron: '3-59/5 17-23 * 1,2,9-12 0'
+    - cron: '3-59/5 0-4 * 1,2,9-12 1'
+    # Partidos nocturnos de lunes y jueves, en tiempo UTC.
+    - cron: '3-59/10 0-4 * 1,2,9-12 2,5'
+    # Horarios especiales de la temporada 2026–27.
+    - cron: '8-59/10 0-4 26 11 *'
+    - cron: '8-59/10 16-23 26,27 11 *'
+    - cron: '8-59/10 18-23 19,25 12 *'
+    - cron: '8-59/10 0-4 20,26 12 *'
+    - cron: '8-59/15 17-23 9,16,23 1 *'
+    - cron: '8-59/15 0-4 10,17,24 1 *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: niftl-public-data-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Revisar fuentes públicas de Niftl
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      NIFTL_MODE: ${{ github.event_name == 'schedule' && github.event.schedule != '13 0-4,11-23 * 1,2,8-12 *' && 'game-window' || 'all' }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - run: node refresh.mjs
