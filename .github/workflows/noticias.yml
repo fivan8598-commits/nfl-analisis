@@ -1,0 +1,49 @@
+name: Actualizar noticias de Niftl
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '4-59/5 * * * *'
+
+permissions: {}
+concurrency:
+  group: niftl-public-news-refresh
+  cancel-in-progress: false
+
+jobs:
+  noticias:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Consultar y verificar el corte público
+        shell: bash
+        env:
+          NEWS_URL: https://campo-nfl-tribuna.lissomegardenia2.chatgpt.site/api/noticias
+        run: |
+          for delay in 0 3 5 7 7 8; do
+            sleep "$delay"
+            data=$(curl --fail --silent --show-error --proto '=https' --retry 1 --retry-max-time 12 \
+              --connect-timeout 3 --max-time 8 -H 'Accept: application/json' -H 'Cache-Control: no-cache' "$NEWS_URL")
+            jq -e '(.news | type == "array") and (.refreshing | type == "boolean")' <<<"$data" >/dev/null || {
+              echo '::error::La ruta de noticias devolvió JSON inválido o incompleto.'; exit 1;
+            }
+            if jq -e '.refreshing == false' <<<"$data" >/dev/null; then break; fi
+          done
+          state=$(jq -r 'if .refreshing then "refreshing" else .reason // "ok" end' <<<"$data")
+          case "$state" in
+            refreshing|unverified) echo '::error::La revisión aún no tiene un corte verificado.'; exit 1 ;;
+            sources-unavailable) echo '::error::Falló la consulta a las fuentes. Se conserva el último corte disponible.'; exit 1 ;;
+            storage-unavailable) echo '::error::No se pudo consultar el almacenamiento de noticias.'; exit 1 ;;
+            ok|partial) ;;
+            *) echo '::error::Estado de noticias inesperado.'; exit 1 ;;
+          esac
+          jq -e 'def recent: try (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601 | now - . | . >= -30 and . <= 120) catch false;
+            (.checkedAt | recent) and (.updatedAt | recent) and (.news | length > 0)' <<<"$data" >/dev/null || {
+            echo '::error::La API devolvió caché vieja, sin titulares o sin un corte verificable.'; exit 1;
+          }
+          if [[ "$state" == partial ]]; then
+            echo '::warning::Cobertura parcial. El corte conserva las noticias previas de las fuentes que fallaron.'
+          elif jq -e '.stale == true' <<<"$data" >/dev/null; then
+            echo '::error::El servidor marcó el corte como atrasado.'; exit 1
+          fi
+          jq -r '"\(.news | length) titulares · revisión \(.checkedAt) · corte \(.updatedAt)"' <<<"$data"
