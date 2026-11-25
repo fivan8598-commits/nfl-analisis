@@ -23,6 +23,8 @@ RETRYABLE = {408, 425, 429, 500, 502, 503, 504}
 MARKUP = re.compile(r'[<>\x00-\x1f\x7f-\x9f\u2028\u2029]|https?://|^\s*(?:[-*#•]+\s|\d+[.)]\s)', re.I)
 TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
 SENTENCE = re.compile(r'(?<=[.!?…])\s+')
+DRAFT_BOUNDARY = re.compile(r'[.!?…][»”’"\')\]]*(\s+)(?=[A-ZÁÉÍÓÚÜÑ¿¡«])')
+SHORT_FORM = re.compile(r'\b(?:[A-Z]|Sr|Sra|Dr|Dra|Jr|St|Mt|vs|núm|pág|aprox)$')
 SYSTEM = (
     'Eres redactor de noticias de la NFL. Escribe en español natural, preciso y periodístico. '
     'Redacta con una estructura propia y en tus palabras. Sintetiza el hecho central, sus protagonistas, '
@@ -272,17 +274,50 @@ def numeric_tokens(text):
     return set(re.findall(r'\d+', re.sub(r'(?<=\d)[.,](?=\d)', '', text)))
 
 
-def validate(paragraphs, original, title, total_words):
+def draft_sentences(paragraph):
+    start = 0
+    for boundary in DRAFT_BOUNDARY.finditer(paragraph):
+        if paragraph[boundary.start()] == '.' and SHORT_FORM.search(paragraph[:boundary.start()]):
+            continue
+        yield paragraph[start:boundary.start(1)]
+        start = boundary.end()
+    yield paragraph[start:]
+
+
+def fit_sentences(paragraphs, minimum, maximum):
+    sentences = [(p, first == 0, sentence) for p, paragraph in enumerate(paragraphs)
+                 for first, sentence in enumerate(draft_sentences(paragraph))]
+    # For each attainable length, retain the best ordered subset seen so far.
+    # Prefer the lead, then opening sentences of other paragraphs for breadth.
+    choices = {0: (0, 0, ())}
+    for index, (_, opens, sentence) in enumerate(sentences):
+        length = word_count(sentence)
+        for used, (lead, topics, selected) in list(choices.items()):
+            count = used + length
+            if count > maximum:
+                continue
+            candidate = (lead or index == 0, topics + int(opens), (*selected, index))
+            if count not in choices or candidate[:2] > choices[count][:2]:
+                choices[count] = candidate
+    fits = ((lead, topics, -abs(minimum + maximum - 2 * count), selected)
+            for count, (lead, topics, selected) in choices.items() if count >= minimum)
+    winner = max(fits, default=None, key=lambda fit: fit[:3])
+    if not winner:
+        return None
+    output = [[] for _ in paragraphs]
+    for index in winner[3]:
+        p, _, sentence = sentences[index]
+        output[p].append(sentence)
+    return [' '.join(sentences) for sentences in output if sentences]
+
+
+def validate(paragraphs, original, title, total_words, *, shorten=False):
     if not isinstance(paragraphs, list) or not 1 <= len(paragraphs) <= 180:
         raise InvalidDraft('Entrega un arreglo de párrafos en paragraphs.')
     if any(not isinstance(p, str) or not p.strip() or MARKUP.search(p) for p in paragraphs):
         raise InvalidDraft('Usa párrafos de prosa en una sola línea, sin enlaces ni marcas.')
     paragraphs = [p.strip() for p in paragraphs]
     output = '\n'.join(paragraphs)
-    count = word_count(output)
-    minimum, maximum = math.ceil(total_words * .45), math.floor(total_words * .55)
-    if not minimum <= count <= maximum:
-        raise InvalidDraft(f'El borrador tuvo {count} palabras. Debe tener entre {minimum} y {maximum}.')
     original_tokens = normalized_words(original + '\n' + title)
     written = normalized_words(output)
     if set(ngrams(original_tokens, 8)).intersection(ngrams(written, 8)):
@@ -291,6 +326,14 @@ def validate(paragraphs, original, title, total_words):
         raise InvalidDraft('Hay párrafos repetidos. Usa ese espacio para detalles pertinentes de la fuente.')
     if numeric_tokens(output) - numeric_tokens(original + '\n' + title):
         raise InvalidDraft('Hay cifras sin respaldo textual. Usa solo los números del material.')
+    count = word_count(output)
+    minimum, maximum = math.ceil(total_words * .45), math.floor(total_words * .55)
+    if shorten and count > maximum:
+        fitted = fit_sentences(paragraphs, minimum, maximum)
+        if fitted:
+            return validate(fitted, original, title, total_words)
+    if not minimum <= count <= maximum:
+        raise InvalidDraft(f'El borrador tuvo {count} palabras. Debe tener entre {minimum} y {maximum}.')
     return paragraphs
 
 
@@ -333,7 +376,7 @@ def model_draft(http, args, title, text, words, part, parts):
             },
         )
         try:
-            return validate(model_paragraphs(response), text, title, words)
+            return validate(model_paragraphs(response), text, title, words, shorten=True)
         except InvalidDraft as error:
             if attempt >= args.corrections:
                 raise
