@@ -10,13 +10,12 @@ GitHub Actions consulta la cartelera, la disponibilidad, los reportes de club y 
 
 El mes con más disparos durante la temporada de referencia es enero de 2027, con 1,632 jobs programados, incluidos los solapes horarios. Los jobs suelen consumir un minuto de Linux cada uno. Los reintentos manuales, las ejecuciones largas y otros repositorios comparten el presupuesto de Actions. GitHub ejecuta el cron según la disponibilidad de sus runners y puede retrasar un job.
 
-Las consultas usan rutas públicas del sitio. El workflow requiere solo permisos de lectura del repositorio y funciona sin secretos. Cada revisión incorpora las actas y los partes que la fuente ya publicó. Los resultados confirmados se conservan si ESPN o la NFL presentan demora.
+Las tareas de actualización y noticias consultan el sitio con una credencial temporal de GitHub Actions para la audiencia `niftl-feed-refresh`. Cada tarea requiere acceso de lectura al repositorio y emisión de identidad OIDC. Cada revisión incorpora las actas y los partes que la fuente ya publicó. Los resultados confirmados se conservan si ESPN o la NFL presentan demora.
 
 ## Ejecución
 
 Coloca estos archivos en la rama predeterminada del repositorio. En **Actions**, selecciona **Actualizar Niftl** y **Run workflow** para verificar el primer registro. Las ejecuciones programadas usan la misma rama.
 
 ```sh
-node --test refresh.test.mjs
-node refresh.mjs
+node --test
 ```

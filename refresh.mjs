@@ -1,10 +1,7 @@
-import {execFile} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
-import {promisify} from 'node:util';
 import {setTimeout as sleep} from 'node:timers/promises';
+import {createFeedReader} from './feed-http.mjs';
 
-const exec = promisify(execFile);
-const site = 'https://campo-nfl-tribuna.lissomegardenia2.chatgpt.site';
 const hour = 3600000;
 const endpoints = ['disponibilidad','reportes','resultados'];
 const dateValue = text => Number.isFinite(Date.parse(text));
@@ -15,17 +12,6 @@ const valid = {
   resultados: data => Array.isArray(data?.games) &&
     ['finals','teamGames','individualGames'].every(key=>Number.isInteger(data.coverage?.[key]))
 };
-
-async function readNiftl(name) {
-  const {stdout} = await exec('curl',[
-    '--silent','--show-error','--proto','=https','--connect-timeout','3','--max-time','6',
-    '--header','Accept: application/json','--write-out','\n%{http_code}',site+'/api/'+name
-  ],{encoding:'utf8',maxBuffer:6_000_000});
-  const split = stdout.lastIndexOf('\n');
-  const status = Number(stdout.slice(split+1));
-  const body = status===200 ? JSON.parse(stdout.slice(0,split)) : null;
-  return {status,body};
-}
 
 const activity = (games,now) => games.some(game=>{
   const kickoff = Date.parse(game.kickoff);
@@ -69,7 +55,7 @@ function line(name,response,expectedFinals) {
   return name+': '+details.join(' · ');
 }
 
-export async function refreshNiftl({mode='all',now=Date.now(),read=readNiftl,pause=sleep}={}) {
+export async function refreshNiftl({mode='all',now=Date.now(),read=createFeedReader(),pause=sleep}={}) {
   async function load(name) {
     try {
       const {status,body} = await read(name);

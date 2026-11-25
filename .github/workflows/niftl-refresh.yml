@@ -18,8 +18,7 @@ on:
     - cron: '8-59/15 17-23 9,16,23 1 *'
     - cron: '8-59/15 0-4 10,17,24 1 *'
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: niftl-public-data-refresh
@@ -30,6 +29,9 @@ jobs:
     name: Revisar fuentes públicas de Niftl
     runs-on: ubuntu-latest
     timeout-minutes: 2
+    permissions:
+      contents: read
+      id-token: write
     env:
       NIFTL_MODE: ${{ github.event_name == 'schedule' && github.event.schedule != '7,37 * * * *' && 'game-window' || 'all' }}
     steps:
