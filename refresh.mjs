@@ -4,6 +4,7 @@ import {createFeedReader} from './feed-http.mjs';
 
 const hour = 3600000;
 const endpoints = ['disponibilidad','reportes','resultados'];
+const retryDelays = [5_000,7_000,13_000];
 const dateValue = text => Number.isFinite(Date.parse(text));
 const valid = {
   cartelera: data => Array.isArray(data?.games) && dateValue(data.updatedAt),
@@ -30,8 +31,10 @@ function missingRecent(response,expectedFinals) {
   return expectedFinals.filter(id=>!ids.has(id));
 }
 
+const refreshing = response => response.body?.refreshing===true;
+
 function recheck(name,response,expectedFinals) {
-  if (!response.ok || response.pending || response.body?.stale===true) return true;
+  if (!response.ok || response.pending || refreshing(response) || response.body?.stale===true) return true;
   if (name!=='resultados') return false;
   return !dateValue(response.body.checkedAt) || missingRecent(response,expectedFinals).length>0;
 }
@@ -43,6 +46,7 @@ function line(name,response,expectedFinals) {
   const details = [body.checkedAt || 'revisión aún sin registrar'];
   if (body.updatedAt && body.updatedAt!==body.checkedAt) details.push('corte '+body.updatedAt);
   if (body.stale) details.push('último corte guardado');
+  if (refreshing(response)) details.push('consulta en curso');
   if (name==='resultados') {
     const {teamGames,individualGames,finals} = body.coverage;
     details.push(teamGames+'/'+finals+' actas de equipo y '+individualGames+' con estadísticas individuales');
@@ -68,29 +72,32 @@ export async function refreshNiftl({mode='all',now=Date.now(),read=createFeedRea
     }
   }
 
-  let calendar = await load('cartelera');
-  if (recheck('cartelera',calendar,[])) {
-    await pause(5000);
-    const updated = await load('cartelera');
-    if (updated.ok || !calendar.ok) calendar=updated;
+  async function loadWithRetry(names,expectedFinals) {
+    let snapshots=await Promise.all(names.map(load));
+    let needsRead=snapshots.map((response,index)=>recheck(names[index],response,expectedFinals));
+    // Only a background consultation gets the full window of 25 seconds.
+    for (const delay of retryDelays) {
+      if (!needsRead.some(Boolean)) break;
+      await pause(delay);
+      snapshots=await Promise.all(snapshots.map(async (previous,index)=>{
+        if (!needsRead[index]) return previous;
+        const updated=await load(names[index]);
+        return updated.ok||!previous.ok?updated:previous;
+      }));
+      needsRead=snapshots.map((response,index)=>needsRead[index]&&refreshing(response));
+    }
+    return snapshots;
   }
+
+  const [calendar]=await loadWithRetry(['cartelera'],[]);
   const games = calendar.body?.games || [];
   const previousRound = line('cartelera',calendar,[]);
-  if (mode==='game-window' && calendar.ok && !calendar.body.stale && !activity(games,now)) {
+  if (mode==='game-window' && calendar.ok && !refreshing(calendar) && !calendar.body.stale && !activity(games,now)) {
     return {ok:true,skipped:true,lines:[previousRound,'Sin partidos en la ventana de actualización intensiva.']};
   }
 
   const expectedFinals = recentFinals(games,now);
-  let feeds = await Promise.all(endpoints.map(load));
-  const retry = feeds.map((response,index)=>recheck(endpoints[index],response,expectedFinals));
-  if (retry.some(Boolean)) {
-    await pause(5000);
-    feeds = await Promise.all(feeds.map(async (response,index)=>{
-      if (!retry[index]) return response;
-      const updated = await load(endpoints[index]);
-      return updated.ok || !response.ok ? updated : response;
-    }));
-  }
+  const feeds=await loadWithRetry(endpoints,expectedFinals);
   return {ok:calendar.ok && feeds.every(result=>result.ok),skipped:false,
     lines:[previousRound,...feeds.map((response,index)=>line(endpoints[index],response,expectedFinals))]};
 }
