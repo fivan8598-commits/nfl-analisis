@@ -91,7 +91,7 @@ class JsonHTTP:
         return seconds
 
     def request(self, stage, url, *, method='GET', bearer=None, payload=None, timeout=20, retries=2, local=False):
-        headers = {'Accept': 'application/json'}
+        headers = {'Accept': 'application/json', 'User-Agent': 'NIFTL-News/1.0 (+https://github.com/fivan8598-commits/nfl-analisis)'}
         if bearer is not None:
             if not valid_bearer(bearer):
                 raise RequestFailure(stage, 'credencial con formato inválido')
@@ -179,7 +179,7 @@ class SiteAPI:
         try:
             return self.http.request(path, url, method=method, payload=payload, bearer=token)
         except RequestFailure as error:
-            if error.status != 401 or self.fixture_token:
+            if error.status not in {401, 403} or self.fixture_token:
                 raise
             return self.http.request(path, url, method=method, payload=payload, bearer=self.bearer(refresh=True))
 
@@ -196,7 +196,9 @@ class SiteAPI:
         payload = {'paragraphs': paragraphs, 'sourceWords': words, 'fingerprint': fingerprint}
         if len(json_bytes(payload)) > MAX_SUMMARY_BYTES:
             raise InvalidDraft('El resumen excede el tamaño de publicación.')
-        return self.request('/api/noticias/resumen', method='PUT', params={'url': article_url}, payload=payload)
+        response = self.request('/api/noticias/resumen', method='PUT', params={'url': article_url}, payload=payload)
+        if not isinstance(response, dict) or response.get('status') != 'ready':
+            raise RequestFailure('Publicación', 'el sitio no confirmó que el resumen esté disponible')
 
 
 def queue_items(items):
