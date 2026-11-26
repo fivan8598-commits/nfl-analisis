@@ -12,6 +12,7 @@ import unicodedata
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urlunsplit
@@ -27,6 +28,13 @@ RETRYABLE = {408, 425, 429, 500, 502, 503, 504}
 PLAIN_LINE = re.compile(r'[<>\x00-\x1f\x7f-\x9f\u2028\u2029]|https?://', re.I)
 LIST_MARKUP = re.compile(r'^\s*(?:[-*#•]+\s|\d+[.)]\s)')
 TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
+CLOCK = r'(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d)(?:\s*(?P<meridiem>[ap])\.?\s*m\.?(?![a-z]))?'
+NUMERAL = re.compile(CLOCK + r'|(?P<number>\d+(?:[.,]\d+)*)', re.I)
+ENGLISH_NUMBERS = {word: value for value, word in enumerate(
+    'zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen'.split()
+)}
+SPANISH_MARKERS = set('al aunque como con cuando de del desde donde el entre esta este fue habia ha hasta la las lo los mientras para por que quienes se sin sobre su sus tambien tras un una y'.split())
+ENGLISH_MARKERS = set('a about after an and are as at been before by can during for from had has have is it of on said that the their this to was were when will with would'.split())
 SENTENCE = re.compile(r'(?<=[.!?…])\s+')
 DRAFT_BOUNDARY = re.compile(r'[.!?…][»”’"\')\]]*(\s+)(?=[A-ZÁÉÍÓÚÜÑ¿¡«])')
 SHORT_FORM = re.compile(r'\b(?:[A-Z]|Sr|Sra|Dr|Dra|Jr|St|Mt|vs|núm|pág|aprox)$')
@@ -320,17 +328,74 @@ def normalized_words(text):
     return TOKEN.findall(letters)
 
 
+def clearly_spanish(text):
+    words = normalized_words(text)
+    spanish = [word for word in words if word in SPANISH_MARKERS]
+    english = sum(word in ENGLISH_MARKERS for word in words)
+    # Require several grammar words and clear separation from English. Names alone carry no signal.
+    return len(set(spanish)) >= (4 if len(words) >= 20 else 2) and len(spanish) >= max(2 * english + 2, len(words) * .10)
+
+
 def ngrams(words, size):
     return zip(*(words[i:] for i in range(size)))
 
 
-def numeric_tokens(text):
-    # Decimal separator and thousands-grouping changes are typographical.
-    return set(re.findall(r'\d+', re.sub(r'(?<=\d)[.,](?=\d)', '', text)))
+def numeral_tokens(text):
+    for token in NUMERAL.finditer(text):
+        if token['hour'] is not None:
+            hour, meridiem = int(token['hour']), token['meridiem']
+            if meridiem and hour > 12:
+                yield ('clock', token.group().casefold())
+                continue
+            if meridiem:
+                hour = hour % 12 + (12 if meridiem.casefold() == 'p' else 0)
+            yield ('clock', f'{hour:02d}:{token["minute"]}')
+            continue
+        offset = token.start()
+        sign = text[offset - 1] if offset else ''
+        if sign in {'-', '−'} and offset >= 2 and text[offset - 2].isdecimal():
+            sign = ''  # A separator inside a score, record, date or range.
+        yield ('-' if sign == '−' else sign if sign in {'-', '+'} else '', token.group())
 
 
-def digits(text):
-    return Counter(re.findall(r'\d+(?:[,.]\d+)*', text.replace(',', '.')))
+def numeral_value(token, grouping=',', decimal='.'):
+    whole, mark, fraction = token.partition(decimal)
+    groups = whole.split(grouping)
+    if len(groups) > 1 and (not 1 <= len(groups[0]) <= 3 or any(len(part) != 3 for part in groups[1:])):
+        return None
+    if not all(part.isdecimal() for part in groups) or mark and not fraction.isdecimal():
+        return None
+    return Decimal(''.join(groups) + ('.' + fraction if mark else ''))
+
+
+def numeral_options(sign, token):
+    if sign == 'clock':
+        return ((sign, token),)
+    options = [numeral_value(token, grouping='.', decimal=','), numeral_value(token)]
+    distinct = dict.fromkeys(value for value in options if value is not None)
+    return tuple((sign, value) for value in (distinct or [token]))
+
+
+def same_numerals(original, translated):
+    raw = list(numeral_tokens(original))
+    expected = Counter((sign, token if sign == 'clock' else numeral_value(token)) for sign, token in raw)
+    if any(value is None for _, value in expected):
+        # Preserve irregular notation verbatim when its value cannot be determined.
+        return Counter(raw) == Counter(numeral_tokens(translated))
+    written_out = Counter(('', ENGLISH_NUMBERS[word]) for word in normalized_words(original) if word in ENGLISH_NUMBERS)
+    available = [numeral_options(sign, token) for sign, token in numeral_tokens(translated)]
+    # Both locales are valid in a rendering of NFL statistics. Match the least ambiguous values first.
+    available.sort(key=lambda values: sum(expected[value] > 0 for value in values))
+    for values in available:
+        required = next((value for value in values if expected[value] > 0), None)
+        if required is not None:
+            expected[required] -= 1
+            continue
+        optional = next((value for value in values if written_out[value] > 0), None)
+        if optional is None:
+            return False
+        written_out[optional] -= 1
+    return expected.total() == 0
 
 
 def draft_sentences(paragraph):
@@ -383,7 +448,8 @@ def validate(paragraphs, translation, title, total_words, *, original=None, shor
         raise InvalidDraft('Hay ocho o más palabras seguidas tomadas de la fuente o su traducción. Reestructura y parafrasea.')
     if len({tuple(normalized_words(p)) for p in paragraphs}) != len(paragraphs):
         raise InvalidDraft('Hay párrafos repetidos. Usa ese espacio para detalles pertinentes de la fuente.')
-    if numeric_tokens(output) - numeric_tokens(translation + '\n' + title):
+    supported = {value for sign, token in numeral_tokens(translation + '\n' + title) for value in numeral_options(sign, token)}
+    if any(supported.isdisjoint(numeral_options(sign, token)) for sign, token in numeral_tokens(output)):
         raise InvalidDraft('Hay cifras sin respaldo textual. Usa solo los números del material.')
     count = word_count(output)
     minimum, maximum = math.ceil(total_words * .45), math.floor(total_words * .55)
@@ -437,7 +503,7 @@ def check_translation(original, translated):
     words, converted = word_count(original), word_count(translated)
     if words >= 8 and (not .6 <= converted / words <= 1.9 or normalized_words(original) == normalized_words(translated)):
         raise InvalidDraft('La traducción no conserva íntegro un fragmento en español.')
-    if digits(original) != digits(translated):
+    if not same_numerals(original, translated):
         raise InvalidDraft('La traducción omite o modifica cifras de la fuente.')
     return translated.strip()
 
@@ -499,13 +565,13 @@ def article_title(result, fallback):
 
 
 def spanish_article(http, args, title, original, language):
-    if language == 'es':
+    if language == 'es' or clearly_spanish(' '.join(original)):
         return [(text, text) for text in article_chunks(original)], title
     chunks = article_chunks(original, TRANSLATION_CHARS, preserve_paragraphs=True)
     text = []
-    title_es = None
+    title_es = title if clearly_spanish(title) else None
     for number, chunk in enumerate(chunks):
-        translation, translated_title = translate_fragment(http, args, chunk, title if number == 0 else None)
+        translation, translated_title = translate_fragment(http, args, chunk, title if number == 0 and not title_es else None)
         text.append((' '.join(chunk), ' '.join(translation)))
         if translated_title:
             title_es = translated_title

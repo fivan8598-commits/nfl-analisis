@@ -71,6 +71,23 @@ class EditorialTest(unittest.TestCase):
         self.assertEqual(calls[0][1]['texto_en_espanol'], ' '.join(TRANSLATED))
         self.assertEqual((summary, words, title), (DRAFTS, count, TITLE_ES))
 
+    def test_does_not_retranslate_a_spanish_body_mislabeled_as_english(self):
+        nfl_title = 'El regreso triunfal de lo que nunca se había ido'
+        with patch.object(editorial, 'translate_fragment') as translate:
+            chunks, title = editorial.spanish_article(None, ARGS, nfl_title, TRANSLATED, 'en')
+        translate.assert_not_called()
+        self.assertEqual(title, nfl_title)
+        self.assertEqual(chunks, [(' '.join(TRANSLATED), ' '.join(TRANSLATED))])
+
+    def test_translates_an_english_body_and_preserves_an_already_spanish_headline(self):
+        nfl_title = 'El regreso triunfal de lo que nunca se había ido'
+        with patch.object(editorial, 'translate_fragment', return_value=(TRANSLATED, None)) as translate:
+            chunks, title = editorial.spanish_article(None, ARGS, nfl_title, ORIGINAL, 'en')
+        translate.assert_called_once_with(None, ARGS, ORIGINAL, None)
+        self.assertEqual(title, nfl_title)
+        self.assertEqual(chunks, [(' '.join(ORIGINAL), ' '.join(TRANSLATED))])
+        self.assertFalse(editorial.clearly_spanish('How to watch the Carolina Panthers and the Tampa Bay Buccaneers'))
+
     def test_rejects_missing_text_and_changed_numeric_details(self):
         with patch.object(editorial, 'model_json', return_value={'paragraphs': [TRANSLATED[0]], 'titleEs': TITLE_ES}):
             with self.assertRaisesRegex(editorial.InvalidDraft, 'todos los párrafos'):
@@ -79,6 +96,33 @@ class EditorialTest(unittest.TestCase):
             editorial.check_translation('Vega ran 5.3 yards for the club.', 'Vega recorrió 53 yardas para el club.')
         with self.assertRaisesRegex(editorial.InvalidDraft, 'en español'):
             editorial.check_translation(ORIGINAL[0], ORIGINAL[0])
+
+    def test_table_statistics_accept_valid_grouping_and_written_numbers(self):
+        source = 'Baker Mayfield: 1,209 passing yards, five passing touchdowns.'
+        for translation in ['Baker Mayfield: 1209 yardas de pase y 5 pases de touchdown.',
+                            'Baker Mayfield: 1.209 yardas de pase y cinco touchdowns por pase.',
+                            'Baker Mayfield: 1,209 yardas por pase y 5 pases de touchdown.']:
+            self.assertEqual(editorial.check_translation(source, translation), translation)
+        self.assertTrue(editorial.same_numerals('Gained an average of 5.30 yards', 'Promedió 5,3 yardas'))
+        for translation in ['Baker Mayfield: 1290 yardas de pase y 5 pases de touchdown.',
+                            'Baker Mayfield: 1209 yardas de pase y 7 pases de touchdown.',
+                            'Baker Mayfield: 1209 yardas en 2 juegos y 5 pases de touchdown.']:
+            with self.assertRaisesRegex(editorial.InvalidDraft, 'modifica cifras'):
+                editorial.check_translation(source, translation)
+
+    def test_preserves_signed_odds_without_treating_a_score_as_negative(self):
+        self.assertTrue(editorial.same_numerals('Priced at -115 before the 27-0 win', 'Cuota −115 antes del triunfo 27−0'))
+        self.assertTrue(editorial.same_numerals('Went 5-4 with odds of +115', 'Marca de 5–4 y momio +115'))
+        self.assertFalse(editorial.same_numerals('Priced at -115', 'Momio de +115'))
+        self.assertFalse(editorial.same_numerals('Priced at +115', 'Momio de 115'))
+        with self.assertRaisesRegex(editorial.InvalidDraft, 'cifras sin respaldo'):
+            editorial.validate(['El precio de la selección subió a +115.'], 'La selección cotizó a −115.', TITLE_ES, 16)
+
+    def test_matches_clock_notation_without_permitting_a_different_time(self):
+        self.assertTrue(editorial.same_numerals('The game airs at 8:15 p.m. ET on ESPN2.', 'ESPN2 transmite el juego a las 20:15 (hora del Este).'))
+        self.assertTrue(editorial.same_numerals('The event runs 12:00 a.m. to 12:00 p.m.', 'El evento va de las 00:00 a las 12:00.'))
+        self.assertFalse(editorial.same_numerals('Kickoff is 8:15 p.m. ET.', 'Inicio a las 20:45 horas.'))
+        self.assertFalse(editorial.same_numerals('Kickoff is 8:15 a.m. ET.', 'Inicio a las 20:15 horas.'))
 
     def test_rejects_verbatim_text_even_across_a_bilingual_summary(self):
         with self.assertRaisesRegex(editorial.InvalidDraft, 'ocho o más'):
