@@ -182,6 +182,14 @@ class EditorialTest(unittest.TestCase):
         with self.assertRaisesRegex(editorial.InvalidDraft, 'cifras sin respaldo'):
             editorial.validate(['El precio de la selección subió a +115.'], 'La selección cotizó a −115.', TITLE_ES, 16)
 
+    def test_matches_spanish_times_used_in_game_reports(self):
+        self.assertTrue(editorial.same_numerals('1:40 p.m. on Wednesday', 'El miércoles a la 1:40 de la tarde'))
+        self.assertTrue(editorial.same_numerals('11:10 p.m.', '11:10 de la noche'))
+        self.assertTrue(editorial.same_numerals('12:05 a.m.', '12:05 de la noche'))
+        self.assertTrue(editorial.same_numerals('4:30 a.m.', '4:30 de la madrugada'))
+        self.assertFalse(editorial.same_numerals('11:10 p.m.', '11:10 de la mañana'))
+        self.assertFalse(editorial.same_numerals('1:40 p.m.', '1:41 de la tarde'))
+
     def test_matches_clock_notation_without_permitting_a_different_time(self):
         self.assertTrue(editorial.same_numerals('The game airs at 8:15 p.m. ET on ESPN2.', 'ESPN2 transmite el juego a las 20:15 (hora del Este).'))
         self.assertTrue(editorial.same_numerals('The event runs 12:00 a.m. to 12:00 p.m.', 'El evento va de las 00:00 a las 12:00.'))

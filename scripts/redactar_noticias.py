@@ -29,7 +29,8 @@ RETRYABLE = {408, 425, 429, 500, 502, 503, 504}
 PLAIN_LINE = re.compile(r'[<>\x00-\x1f\x7f-\x9f\u2028\u2029]|https?://', re.I)
 LIST_MARKUP = re.compile(r'^\s*(?:[-*#•]+\s|\d+[.)]\s)')
 TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
-CLOCK = r'(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d)(?:\s*(?P<meridiem>[ap])\.?\s*m\.?(?![a-z]))?'
+CLOCK = (r'(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d)'
+         r'(?:\s*(?P<meridiem>[ap])\.?\s*m\.?(?![a-z])|\s+de la (?P<period>mañana|madrugada|tarde|noche)\b)?')
 NUMERAL = re.compile(CLOCK + r'|(?P<number>\d+(?:[.,]\d+)*)', re.I)
 ENGLISH_NUMBERS = {word: value for value, word in enumerate(
     'zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen'.split()
@@ -431,7 +432,13 @@ def numeral_tokens(text):
     for token in NUMERAL.finditer(text):
         if token['hour'] is not None:
             hour, meridiem = int(token['hour']), token['meridiem']
-            if meridiem and hour > 12:
+            period = (token['period'] or '').casefold()
+            if period:
+                if hour == 12 and period == 'mañana':
+                    yield ('clock', token.group().casefold())
+                    continue
+                meridiem = 'p' if period == 'tarde' or (period == 'noche' and hour != 12) else 'a'
+            if meridiem and not 1 <= hour <= 12:
                 yield ('clock', token.group().casefold())
                 continue
             if meridiem:
