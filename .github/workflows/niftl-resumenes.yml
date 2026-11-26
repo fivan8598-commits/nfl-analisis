@@ -34,6 +34,7 @@ jobs:
         timeout-minutes: 1
         shell: bash
         run: |
+          python3 -B -m unittest discover -s scripts
           count=$(python3 scripts/redactar_noticias.py --pending-only --limit 2 --queue-file "$RUNNER_TEMP/niftl-queue.json")
           [[ "$count" =~ ^[0-9]+$ ]]
           printf 'count=%s\n' "$count" >> "$GITHUB_OUTPUT"
@@ -84,7 +85,7 @@ jobs:
           tar -xzf "$archive" -C "$RUNNER_TEMP/niftl-model"
           "$RUNNER_TEMP/niftl-model/llama-$LLAMA_VERSION/llama-server" --version
 
-      - name: Redactar y publicar los resúmenes
+      - name: Traducir, verificar y publicar los resúmenes
         if: steps.cola.outputs.count != '0'
         timeout-minutes: 15
         shell: bash
@@ -109,4 +110,4 @@ jobs:
             sleep 1
           done
           python3 scripts/redactar_noticias.py --queue-file "$RUNNER_TEMP/niftl-queue.json" --limit 2 \
-            --model-url "$local_url/v1/chat/completions" --model-timeout 150 --budget-seconds 800
+            --model-url "$local_url/v1/chat/completions" --model-timeout 195 --budget-seconds 800
