@@ -289,6 +289,7 @@ class SiteAPI:
         response = self.request('/api/noticias/resumen', method='PUT', params={'url': article_url}, payload=payload)
         if not isinstance(response, dict) or response.get('status') != 'ready':
             raise RequestFailure('Publicación', 'el sitio no confirmó que el resumen esté disponible')
+        return response
 
 
 def queue_items(items):

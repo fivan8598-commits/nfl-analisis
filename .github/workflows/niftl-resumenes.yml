@@ -2,18 +2,46 @@ name: Redactar resúmenes NFL de Niftl
 
 on:
   workflow_dispatch:
+    inputs:
+      editorial:
+        description: JSON de una edición en español con huella del original
+        type: string
+        required: false
   schedule:
     - cron: '1-59/10 * * * *'
 
 permissions: {}
-concurrency:
-  group: niftl-news-summaries
-  cancel-in-progress: false
 
 jobs:
+  publicar-editorial:
+    if: github.event_name == 'workflow_dispatch' && inputs.editorial != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    concurrency:
+      group: niftl-news-editorial
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NIFTL_URL: https://campo-nfl-tribuna.lissomegardenia2.chatgpt.site
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Verificar, publicar y volver a consultar una edición
+        timeout-minutes: 1
+        run: |
+          python3 -B -m unittest discover -s scripts
+          python3 -B scripts/publicar_editorial.py
+
   redactar:
+    if: github.event_name == 'schedule' || inputs.editorial == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 22
+    concurrency:
+      group: niftl-news-summaries
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
