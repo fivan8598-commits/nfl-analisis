@@ -198,6 +198,27 @@ class EditorialTest(unittest.TestCase):
         with self.assertRaises(editorial.LiteralDraft):
             editorial.validate([source.replace('documentados', 'docu\u0301mentados')], source, TITLE_ES, 20)
 
+    def test_overlong_draft_can_drop_only_copied_sentences_and_still_goes_to_editor(self):
+        calls = []
+        padded = [DRAFTS[0] + ' ' + TRANSLATED[0], DRAFTS[1]]
+
+        def model(http, args, stage, system, data, max_tokens, **opts):
+            calls.append((stage, data.copy()))
+            return {'paragraphs': padded} if stage == 'Modelo local' else {'verdict': 'ok'}
+
+        translation, original = ' '.join(TRANSLATED), ' '.join(ORIGINAL)
+        with patch.object(editorial, 'model_json', model):
+            actual = editorial.model_draft(None, ARGS, TITLE_ES, translation, original, len(translation.split()), 1, 1, None)
+        self.assertEqual(actual, DRAFTS)
+        self.assertEqual([stage for stage, _ in calls], ['Modelo local', 'Revisión editorial'])
+        self.assertEqual(calls[1][1]['texto_original'], original)
+        self.assertEqual(editorial.copied_passages(' '.join(actual), (translation, original, TITLE_ES)), [])
+
+    def test_overlong_draft_with_no_independent_lead_still_requires_rewrite(self):
+        translation, original = ' '.join(TRANSLATED), ' '.join(ORIGINAL)
+        with self.assertRaises(editorial.LiteralDraft):
+            editorial.validate([TRANSLATED[0], *DRAFTS], translation, TITLE_ES, len(translation.split()), original=original, shorten=True)
+
     def test_publication_contains_the_summary_and_counts_without_full_translation(self):
         site = editorial.SiteAPI.__new__(editorial.SiteAPI)
         path = 'https://www.espn.com/nfl/story/_/id/12345678/example'

@@ -528,7 +528,20 @@ def validate(paragraphs, translation, title, total_words, *, original=None, shor
         raise InvalidDraft('Usa párrafos de prosa en una sola línea, sin enlaces ni marcas.')
     paragraphs = [p.strip() for p in paragraphs]
     output = '\n'.join(paragraphs)
-    passages = copied_passages(output, (translation, original or '', title))
+    sources = (translation, original or '', title)
+    count = word_count(output)
+    minimum, maximum = math.ceil(total_words * .45), math.floor(total_words * .55)
+    if shorten and count > maximum:
+        independent = [' '.join(sentence for sentence in draft_sentences(p) if not copied_passages(sentence, sources))
+                       for p in paragraphs]
+        # Keep a lead before selecting sentences so the remaining copy still has a place to start.
+        fitted = fit_sentences([p for p in independent if p], minimum, maximum) if independent[0] else None
+        if fitted:
+            try:
+                return validate(fitted, translation, title, total_words, original=original)
+            except InvalidDraft:
+                pass
+    passages = copied_passages(output, sources)
     if passages:
         raise LiteralDraft(paragraphs, passages)
     if len({tuple(normalized_words(p)) for p in paragraphs}) != len(paragraphs):
@@ -536,12 +549,6 @@ def validate(paragraphs, translation, title, total_words, *, original=None, shor
     supported = {value for sign, token in numeral_tokens(translation + '\n' + title) for value in numeral_options(sign, token)}
     if any(supported.isdisjoint(numeral_options(sign, token)) for sign, token in numeral_tokens(output)):
         raise InvalidDraft('Hay cifras sin respaldo textual. Usa solo los números del material.')
-    count = word_count(output)
-    minimum, maximum = math.ceil(total_words * .45), math.floor(total_words * .55)
-    if shorten and count > maximum:
-        fitted = fit_sentences(paragraphs, minimum, maximum)
-        if fitted:
-            return validate(fitted, translation, title, total_words, original=original)
     if not minimum <= count <= maximum:
         raise InvalidDraft(f'El borrador tuvo {count} palabras. Debe tener entre {minimum} y {maximum}.')
     return paragraphs
