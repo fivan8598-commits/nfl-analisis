@@ -1,6 +1,7 @@
 const SITE = 'https://campo-nfl-tribuna.lissomegardenia2.chatgpt.site';
 const AUDIENCE = 'niftl-feed-refresh';
-const FEEDS = new Set(['cartelera', 'disponibilidad', 'reportes', 'resultados', 'noticias']);
+const FEEDS = new Set(['cartelera', 'disponibilidad', 'reportes', 'resultados', 'noticias', 'profundidad']);
+export const nflTeams='ARI ATL BAL BUF CAR CHI CIN CLE DAL DEN DET GB HOU IND JAX KC LAC LAR LV MIA MIN NE NO NYG NYJ PHI PIT SEA SF TB TEN WAS'.split(' ');
 const REFRESH_MARGIN = 30_000;
 
 function expiry(value) {
@@ -71,9 +72,13 @@ export function createFeedReader({env = process.env, transport = fetch, clock = 
     return pending;
   }
 
-  return async function readFeed(name, {timeout = 6_000, noCache = false} = {}) {
+  return async function readFeed(name, {timeout = 6_000, noCache = false, team} = {}) {
     if (!FEEDS.has(name)) throw new Error('Fuente de Niftl desconocida.');
     const url = new URL('/api/' + name, SITE);
+    if (name==='profundidad') {
+      if (!nflTeams.includes(team)) throw new Error('Club de Niftl desconocido.');
+      url.searchParams.set('team',team);
+    }
     const credential = await bearer();
     let response = await get(transport, url, credential, timeout, noCache);
     if (response.status === 401 || response.status === 403) {

@@ -28,19 +28,23 @@ test('solicita la audiencia fija y usa la credencial de cada origen sin seguir r
       assert.equal(options.headers.Authorization, 'Bearer ' + requestToken);
       return Response.json({value: jwt('approved')});
     }
-    calls.push(url.pathname);
+    calls.push(url.pathname+url.search);
     assert.equal(url.origin, site);
     assert.equal(options.headers.Authorization, 'Bearer ' + jwt('approved'));
     assert.equal(options.headers['Cache-Control'], url.pathname === '/api/noticias' ? 'no-cache' : undefined);
     return url.pathname === '/api/reportes' ? new Response(null, {status: 204}) : Response.json({ok: true});
   }});
-  const [news, reports] = await Promise.all([read('noticias', {noCache: true}), read('reportes')]);
+  const [news, reports, depth] = await Promise.all([
+    read('noticias', {noCache: true}),read('reportes'),read('profundidad',{team:'LAR'})
+  ]);
   assert.deepEqual(news, {status: 200, body: {ok: true}});
   assert.deepEqual(reports, {status: 204, body: null});
-  assert.deepEqual(calls, ['/api/noticias', '/api/reportes']);
+  assert.deepEqual(depth, {status: 200, body: {ok: true}});
+  assert.deepEqual(calls, ['/api/noticias', '/api/reportes', '/api/profundidad?team=LAR']);
   assert.equal(issuances, 1);
   await assert.rejects(read('encuestas'), /desconocida/);
-  assert.equal(calls.length, 2);
+  await assert.rejects(read('profundidad',{team:'LAR&team=GB'}), /desconocido/);
+  assert.equal(calls.length, 3);
 });
 
 test('renueva una sola vez si el sitio rechaza el token o este está próximo a caducar', async () => {
