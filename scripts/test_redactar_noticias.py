@@ -33,24 +33,24 @@ ARGS = SimpleNamespace(corrections=1)
 class EditorialTest(unittest.TestCase):
     def test_completes_all_translation_before_the_draft_and_measures_spanish(self):
         calls = []
-        translations = iter([{'paragraphs': [TRANSLATED[0]], 'titleEs': TITLE_ES}, {'paragraphs': [TRANSLATED[1]]}])
-        drafts = iter(DRAFTS)
+        translations = iter([{'paragraphs': [{'id': 1, 'text': TRANSLATED[0]}], 'titleEs': TITLE_ES},
+                             {'paragraphs': [{'id': 1, 'text': TRANSLATED[1]}]}])
 
         def model(http, args, stage, system, data, max_tokens, **opts):
             calls.append((stage, data.copy()))
             if stage == 'Traducción':
                 return next(translations)
             if stage == 'Modelo local':
-                return {'paragraphs': [next(drafts)]}
+                return {'paragraphs': DRAFTS}
             return {'verdict': 'ok'}
 
         source_words = editorial.word_count(' '.join(ORIGINAL))
         with patch.object(editorial, 'TRANSLATION_CHARS', max(map(len, ORIGINAL)) + 1), patch.object(editorial, 'model_json', model):
             summary, translated_words, title_es = editorial.summarize(None, ARGS, TITLE, ORIGINAL, source_words, 'en')
-        self.assertEqual([stage for stage, _ in calls], ['Traducción', 'Revisión de traducción'] * 2 + ['Modelo local', 'Revisión editorial'] * 2)
-        self.assertEqual(calls[4][1]['texto_en_espanol'], TRANSLATED[0])
+        self.assertEqual([stage for stage, _ in calls], ['Traducción', 'Revisión de traducción'] * 2 + ['Modelo local', 'Revisión editorial'])
+        self.assertEqual(calls[4][1]['texto_en_espanol'], '\n'.join(TRANSLATED))
         self.assertNotIn('texto_original', calls[4][1])
-        self.assertEqual(calls[5][1]['texto_original'], ORIGINAL[0])
+        self.assertEqual(calls[5][1]['texto_original'], '\n'.join(ORIGINAL))
         self.assertEqual(title_es, TITLE_ES)
         self.assertEqual(translated_words, editorial.word_count(' '.join(TRANSLATED)))
         count = editorial.word_count(' '.join(summary))
@@ -85,7 +85,7 @@ class EditorialTest(unittest.TestCase):
             chunks, title = editorial.spanish_article(None, ARGS, nfl_title, ORIGINAL, 'en')
         translate.assert_called_once_with(None, ARGS, ORIGINAL, None)
         self.assertEqual(title, nfl_title)
-        self.assertEqual(chunks, [(' '.join(ORIGINAL), ' '.join(TRANSLATED))])
+        self.assertEqual(chunks, [('\n'.join(ORIGINAL), '\n'.join(TRANSLATED))])
         self.assertFalse(editorial.clearly_spanish('How to watch the Carolina Panthers and the Tampa Bay Buccaneers'))
 
     def test_rejects_missing_text_and_changed_numeric_details(self):
@@ -96,6 +96,46 @@ class EditorialTest(unittest.TestCase):
             editorial.check_translation('Vega ran 5.3 yards for the club.', 'Vega recorrió 53 yardas para el club.')
         with self.assertRaisesRegex(editorial.InvalidDraft, 'en español'):
             editorial.check_translation(ORIGINAL[0], ORIGINAL[0])
+
+    def test_multiple_short_rows_keep_the_translation_limit_and_relative_order(self):
+        rows = [f'Unknown row {i}' for i in range(37)]
+        groups = editorial.article_chunks(rows, 110, preserve_paragraphs=True, max_blocks=4)
+        self.assertEqual([part for group in groups for part in group], rows)
+        self.assertTrue(all(len(group) <= 4 and len(' '.join(group)) <= 110 for group in groups))
+        self.assertEqual(len(groups[-1]), 1)
+
+    def test_translation_splits_after_reordered_ids_and_only_retries_the_failed_portion(self):
+        original = ['No. 10', 'No. 20', 'No. 30', 'No. 40']
+        calls = []
+        def model(http, args, stage, system, data, max_tokens, **opts):
+            if stage == 'Revisión de traducción':
+                self.assertTrue(all(block['id'] > 0 for block in data['bloques']))
+                return {'verdict': 'ok'}
+            source = data['parrafos_originales']
+            ids = [block['id'] for block in source]
+            calls.append((ids, data.get('titular_original')))
+            if ids == [3, 4]:
+                raise editorial.RequestFailure(stage, 'servicio inaccesible o tiempo agotado')
+            output = [{'id': block['id'], 'text': 'Número '+block['text'].split()[-1]} for block in source]
+            if ids == [1, 2, 3, 4]:
+                output.reverse()
+            return {'paragraphs': output, 'titleEs': TITLE_ES}
+        with patch.object(editorial, 'model_json', model):
+            translated, headline = editorial.translate_fragment(None, ARGS, original, TITLE)
+        self.assertEqual(calls, [([1, 2, 3, 4], TITLE), ([1, 2], TITLE), ([3, 4], None), ([3], None), ([4], None)])
+        self.assertEqual(translated, ['Número 10', 'Número 20', 'Número 30', 'Número 40'])
+        self.assertEqual(headline, TITLE_ES)
+
+    def test_translation_preserves_the_full_uniform_table_and_checks_unknown_values(self):
+        rows = ['Arizona Cardinals', 'Helmet: Black', 'Jersey: Black', 'Pants: TBA',
+                'Dallas Cowboys', 'Helmet: White', 'Jersey: Navy', 'Pants: shade number 7']
+        expected = ['Arizona Cardinals', 'Casco: negro', 'Camiseta: negro', 'Pantalón: por anunciar',
+                    'Dallas Cowboys', 'Casco: blanco', 'Camiseta: azul marino', 'Pantalón: tono número 7']
+        with patch.object(editorial, 'translate_fragment', return_value=([expected[-1]], TITLE_ES)) as translate:
+            parts, title = editorial.spanish_article(None, ARGS, TITLE, rows, 'en')
+        translate.assert_called_once_with(None, ARGS, [rows[-1]], TITLE)
+        self.assertEqual(parts, [('\n'.join(rows), '\n'.join(expected))])
+        self.assertEqual(title, TITLE_ES)
 
     def test_table_statistics_accept_valid_grouping_and_written_numbers(self):
         source = 'Baker Mayfield: 1,209 passing yards, five passing touchdowns.'
@@ -129,6 +169,34 @@ class EditorialTest(unittest.TestCase):
             editorial.validate([ORIGINAL[0]], TRANSLATED[0], TITLE_ES, 105, original=ORIGINAL[0])
         with self.assertRaisesRegex(editorial.InvalidDraft, 'ocho o más'):
             editorial.validate([TRANSLATED[0]], TRANSLATED[0], TITLE_ES, 105, original=ORIGINAL[0])
+
+    def test_offers_the_model_exact_spans_and_rechecks_its_rewritten_draft(self):
+        calls = []
+
+        def model(http, args, stage, system, data, max_tokens, **opts):
+            calls.append((stage, system, data.copy()))
+            if stage == 'Revisión editorial':
+                return {'verdict': 'ok'}
+            return {'paragraphs': [DRAFTS[0] if data.get('coincidencias_literales') else TRANSLATED[0]]}
+
+        with patch.object(editorial, 'model_json', model):
+            output = editorial.model_draft(None, ARGS, TITLE_ES, TRANSLATED[0], ORIGINAL[0], len(TRANSLATED[0].split()), 1, 1, None)
+        self.assertEqual(output, [DRAFTS[0]])
+        _, system, correction = calls[1]
+        self.assertIn('reformula cada coincidencia literal', system)
+        self.assertEqual(correction['borrador_para_reescribir'], [TRANSLATED[0]])
+        self.assertIn('El entrenador explicó el miércoles que el receptor', correction['coincidencias_literales'])
+        self.assertEqual(calls[2][0], 'Revisión editorial')
+        self.assertEqual(calls[2][2]['texto_original'], ORIGINAL[0])
+
+    def test_rejects_rewrite_that_keeps_a_copied_passage(self):
+        with patch.object(editorial, 'model_json', return_value={'paragraphs': [TRANSLATED[0]]}) as model:
+            with self.assertRaises(editorial.LiteralDraft):
+                editorial.model_draft(None, ARGS, TITLE_ES, TRANSLATED[0], ORIGINAL[0], len(TRANSLATED[0].split()), 1, 1, None)
+        self.assertEqual(model.call_count, 2)
+        source = 'El informe cita hechos bien documentados en distintas páginas.'
+        with self.assertRaises(editorial.LiteralDraft):
+            editorial.validate([source.replace('documentados', 'docu\u0301mentados')], source, TITLE_ES, 20)
 
     def test_publication_contains_the_summary_and_counts_without_full_translation(self):
         site = editorial.SiteAPI.__new__(editorial.SiteAPI)
