@@ -554,7 +554,10 @@ def validate(paragraphs, translation, title, total_words, *, original=None, shor
     return paragraphs
 
 
-def model_json(http, args, stage, system, data, max_tokens, *, review=False):
+def model_json(http, args, stage, system, data, max_tokens, *, review=False, schema=None):
+    response_format = {'type': 'json_object'}
+    if schema is not None:
+        response_format['schema'] = schema
     response = http.request(
         stage, args.model_url, method='POST', timeout=min(args.model_timeout, 95) if review else args.model_timeout,
         retries=0, local=True,
@@ -564,7 +567,7 @@ def model_json(http, args, stage, system, data, max_tokens, *, review=False):
                 {'role': 'user', 'content': json.dumps(data, ensure_ascii=False)},
             ],
             'temperature': 0 if review else .3, 'max_tokens': max_tokens,
-            'response_format': {'type': 'json_object'},
+            'response_format': response_format,
         },
     )
     try:
@@ -600,6 +603,21 @@ def check_translation(original, translated):
     return translated.strip()
 
 
+def translation_schema(batch, heading):
+    items = [{
+        'type': 'object',
+        'properties': {'id': {'const': block['id']}, 'text': {'type': 'string'}},
+        'required': ['id', 'text'],
+        'additionalProperties': False,
+    } for block in batch]
+    # llama.cpp b12732 compiles prefixItems into an exact tuple, in order.
+    paragraphs = {'type': 'array', 'prefixItems': items, 'minItems': len(items), 'maxItems': len(items)} if items else {'const': []}
+    properties = {'paragraphs': paragraphs}
+    if heading:
+        properties['titleEs'] = {'type': 'string'}
+    return {'type': 'object', 'properties': properties, 'required': list(properties), 'additionalProperties': False}
+
+
 def translate_fragment(http, args, original, title=None):
     blocks = [{'id': index, 'text': text} for index, text in enumerate(original, 1)]
 
@@ -611,7 +629,8 @@ def translate_fragment(http, args, original, title=None):
             request['correccion'] = correction
         words = sum(word_count(block['text']) for block in batch)
         max_tokens = min(1900, max(130, words * 3 + 20 * len(batch) + (100 if heading else 40)))
-        response = model_json(http, args, 'Traducción', TRANSLATOR, request, max_tokens)
+        response = model_json(http, args, 'Traducción', TRANSLATOR, request, max_tokens,
+                              schema=translation_schema(batch, heading))
         paragraphs = response.get('paragraphs')
         if not isinstance(paragraphs, list) or len(paragraphs) != len(batch):
             raise InvalidDraft('La traducción debe conservar todos los párrafos y sus identificadores.')

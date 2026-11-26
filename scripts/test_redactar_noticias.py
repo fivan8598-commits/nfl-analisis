@@ -113,6 +113,11 @@ class EditorialTest(unittest.TestCase):
                 return {'verdict': 'ok'}
             source = data['parrafos_originales']
             ids = [block['id'] for block in source]
+            schema = opts['schema']
+            self.assertEqual(schema['required'], ['paragraphs', 'titleEs'] if data.get('titular_original') else ['paragraphs'])
+            paragraphs = schema['properties']['paragraphs']
+            self.assertEqual([block['properties']['id']['const'] for block in paragraphs['prefixItems']], ids)
+            self.assertEqual((paragraphs['minItems'], paragraphs['maxItems']), (len(ids), len(ids)))
             calls.append((ids, data.get('titular_original')))
             if ids == [3, 4]:
                 raise editorial.RequestFailure(stage, 'servicio inaccesible o tiempo agotado')
@@ -125,6 +130,25 @@ class EditorialTest(unittest.TestCase):
         self.assertEqual(calls, [([1, 2, 3, 4], TITLE), ([1, 2], TITLE), ([3, 4], None), ([3], None), ([4], None)])
         self.assertEqual(translated, ['Número 10', 'Número 20', 'Número 30', 'Número 40'])
         self.assertEqual(headline, TITLE_ES)
+
+    def test_translation_uses_llama_schema_over_http_with_title_only_and_preserves_other_stages(self):
+        calls = []
+        def request(stage, url, **options):
+            form = options['payload']['response_format']
+            calls.append((stage, form))
+            json_body = ('{"paragraphs":[],"titleEs":"El receptor se perdería el próximo partido"}'
+                         if stage == 'Traducción' else '{"verdict":"ok"}')
+            return {'choices': [{'message': {'content': json_body}}]}
+        args = SimpleNamespace(corrections=1, model_url=editorial.DEFAULT_MODEL, model_name='niftl', model_timeout=40)
+        translated, heading = editorial.translate_fragment(SimpleNamespace(request=request), args, [], TITLE)
+        self.assertEqual((translated, heading), ([], TITLE_ES))
+        self.assertEqual(calls[0], ('Traducción', {
+            'type': 'json_object', 'schema': {
+                'type': 'object', 'properties': {'paragraphs': {'const': []}, 'titleEs': {'type': 'string'}},
+                'required': ['paragraphs', 'titleEs'], 'additionalProperties': False,
+            },
+        }))
+        self.assertEqual(calls[1], ('Revisión de traducción', {'type': 'json_object'}))
 
     def test_translation_preserves_the_full_uniform_table_and_checks_unknown_values(self):
         rows = ['Arizona Cardinals', 'Helmet: Black', 'Jersey: Black', 'Pants: TBA',
